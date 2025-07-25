@@ -1,0 +1,28 @@
+name: Daily Bot Run
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # Ogni giorno alle 11:00 italiane
+  workflow_dispatch:
+
+jobs:
+  run-notebook:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        pip install yfinance pandas
+
+    - name: Run notebook logic
+      run: python3 btc_ma_strategy.ipynb
+
+    - name: Send email report
+      run: python3 send_email.py
