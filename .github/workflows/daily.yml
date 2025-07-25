@@ -25,4 +25,4 @@ jobs:
       run: python3 btc_ma_strategy.py
 
     - name: Send email report
-      run: python3 send_email.py
+      
