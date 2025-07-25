@@ -22,7 +22,7 @@ jobs:
         pip install yfinance pandas
 
     - name: Run notebook logic
-      run: python3 btc_ma_strategy.ipynb
+      run: python3 btc_ma_strategy.py
 
     - name: Send email report
       run: python3 send_email.py
