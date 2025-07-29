@@ -1,60 +1,74 @@
-import yfinance as yf
 import pandas as pd
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from binance.client import Client
+from binance.enums import *
+import datetime
 
-# === STRATEGIA TRADING MA50/MA200 ===
+# === CONFIGURAZIONE ===
+API_KEY = "Z41UsiUvJrUiSXZ2cWAXEkyzqscJq5ateXcc9nqkiIl37uIkHpDYmEOPpsjIgMS3"
+API_SECRET = "i4Yy3oAaevaZwkyD6w5EviL3zhXqo4lUZRMA0iBc1y3DImpsasAlXFoCzHqZ3G1n"
+EMAIL_USER = "a.bianco93@icloud.com"
+EMAIL_PASS = "zeaw-pllb-qrxy-npol"
 
-data = yf.download("BTC-USD", start="2020-01-01", end="2024-12-31", interval="1d")
-data.dropna(inplace=True)
-data["MA50"] = data["Close"].rolling(window=50).mean()
-data["MA200"] = data["Close"].rolling(window=200).mean()
-data["position"] = 0
-data.loc[data["MA50"] > data["MA200"], "position"] = 1
+client = Client(API_KEY, API_SECRET, testnet=True)
+symbol = "BTCUSDT"
+interval = "1h"
+quantity = 0.001
 
-balance = 1000.0
-btc_position = 0.0
+# === FUNZIONE STRATEGIA ===
+def get_data():
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=250)
+    df = pd.DataFrame(klines, columns=["time","open","high","low","close","vol","c1","c2","c3","c4","c5","c6"])
+    df["close"] = df["close"].astype(float)
+    df["MA50"] = df["close"].rolling(window=50).mean()
+    df["MA200"] = df["close"].rolling(window=200).mean()
+    return df
 
-for i in range(len(data)):
-    price = float(data["Close"].iloc[i])
-    signal = int(data["position"].iloc[i])
-
-    if signal == 1 and btc_position == 0.0:
-        btc_position = balance / price
-        balance = 0.0
-    elif signal == 0 and btc_position > 0.0:
-        balance = btc_position * price
-        btc_position = 0.0
-
-final_value = balance if btc_position == 0.0 else btc_position * price
-total_return = (final_value / 1000.0 - 1) * 100
-
-# === INVIO EMAIL CON RISULTATO ===
-
-body = f'''
-Trading Bot Report - MA50/200 (BTC-USD)
-
-Rendimento finale: {total_return:.2f}%
-
-Capitale finale: ${final_value:.2f}
-Capitale iniziale: $1000.00
-'''
-
-msg = MIMEMultipart()
-msg["From"] = "a.bianco93@icloud.com"
-msg["To"] = "a.bianco93@icloud.com"
-msg["Subject"] = "Trading Bot - Risultato Giornaliero"
-msg.attach(MIMEText(body, "plain"))
-
-try:
-    print("Invio email a a.bianco93@icloud.com...")
-
+def send_email(subject, body):
+    msg = MIMEMultipart()
+    msg["From"] = EMAIL_USER
+    msg["To"] = EMAIL_USER
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
     with smtplib.SMTP("smtp.mail.me.com", 587) as server:
         server.starttls()
-        server.login("a.bianco93@icloud.com", "zeaw-pllb-qrxy-npol")
+        server.login(EMAIL_USER, EMAIL_PASS)
         server.sendmail(msg["From"], [msg["To"]], msg.as_string())
 
-    print("Email inviata con successo.")
-except Exception as e:
-    print("Errore nell'invio email:", e)
+# === LOGICA TRADING ===
+df = get_data()
+price = df["close"].iloc[-1]
+signal = 1 if df["MA50"].iloc[-1] > df["MA200"].iloc[-1] else 0
+
+open_orders = client.get_open_orders(symbol=symbol)
+positions = client.get_account()
+
+btc_balance = float([a for a in positions["balances"] if a["asset"]=="BTC"][0]["free"])
+usdt_balance = float([a for a in positions["balances"] if a["asset"]=="USDT"][0]["free"])
+
+message = f"📊 Report Trading Bot\nData: {datetime.datetime.now()}\nPrezzo: {price}\n"
+
+# Se segnale BUY e abbiamo USDT
+if signal == 1 and usdt_balance > 10:
+    order = client.order_market_buy(symbol=symbol, quantity=quantity)
+    buy_price = float(order["fills"][0]["price"])
+    sl_price = buy_price * 0.98
+    tp_price = buy_price * 1.05
+    message += f"🟢 BUY eseguito a {buy_price}\nStop Loss: {sl_price}\nTake Profit: {tp_price}\n"
+
+# Se segnale SELL e abbiamo BTC
+elif signal == 0 and btc_balance > 0.0001:
+    order = client.order_market_sell(symbol=symbol, quantity=btc_balance)
+    sell_price = float(order["fills"][0]["price"])
+    message += f"🔴 SELL eseguito a {sell_price}\n"
+
+else:
+    message += "⚠️ Nessuna operazione eseguita.\n"
+
+message += f"\nSaldo BTC: {btc_balance}\nSaldo USDT: {usdt_balance}"
+
+send_email("Trading Bot - Report Giornaliero", message)
+print("✅ Bot eseguito, email inviata.")
+
