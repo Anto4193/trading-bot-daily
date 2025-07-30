@@ -1,78 +1,86 @@
-import pandas as pd
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from binance.client import Client
-from binance.enums import *
+import os
+import time
 import datetime
+import smtplib
+import pandas as pd
+import yfinance as yf
+from email.mime.text import MIMEText
+from binance.client import Client
 
-# === CONFIGURAZIONE ===
-API_KEY = "Z41UsiUvJrUiSXZ2cWAXEkyzqscJq5ateXcc9nqkiIl37uIkHpDYmEOPpsjIgMS3"
-API_SECRET = "i4Yy3oAaevaZwkyD6w5EviL3zhXqo4lUZRMA0iBc1y3DImpsasAlXFoCzHqZ3G1n"
-EMAIL_USER = "a.bianco93@icloud.com"
-EMAIL_PASS = "zeaw-pllb-qrxy-npol"
+# ----------------------------
+# Configurazione variabili ambiente
+# ----------------------------
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
 
-client = Client(API_KEY, API_SECRET, testnet=True)
-symbol = "BTCUSDT"
-interval = "1h"
-quantity = 0.001
+client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
 
-# === FUNZIONE: SCARICA DATI ===
-def get_data():
-    klines = client.get_klines(symbol=symbol, interval=interval, limit=250)
-    df = pd.DataFrame(klines, columns=[
-        "time","open","high","low","close","vol",
-        "c1","c2","c3","c4","c5","c6"
-    ])
-    df["close"] = df["close"].astype(float)
-    df["MA50"] = df["close"].rolling(window=50).mean()
-    df["MA200"] = df["close"].rolling(window=200).mean()
-    return df
-
-# === FUNZIONE: INVIO EMAIL ===
+# ----------------------------
+# Funzione per inviare email
+# ----------------------------
 def send_email(subject, body):
-    msg = MIMEMultipart()
-    msg["From"] = EMAIL_USER
-    msg["To"] = EMAIL_USER
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain"))
-    with smtplib.SMTP("smtp.mail.me.com", 587) as server:
+    msg = MIMEText(body)
+    msg['Subject'] = subject
+    msg['From'] = EMAIL_ADDRESS
+    msg['To'] = EMAIL_RECEIVER
+
+    try:
+        server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASS)
-        server.sendmail(msg["From"], [msg["To"]], msg.as_string())
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        server.sendmail(EMAIL_ADDRESS, EMAIL_RECEIVER, msg.as_string())
+        server.quit()
+    except Exception as e:
+        print("Errore invio email:", e)
 
-# === LOGICA TRADING ===
-df = get_data()
-price = df["close"].iloc[-1]
-signal = 1 if df["MA50"].iloc[-1] > df["MA200"].iloc[-1] else 0
+# ----------------------------
+# Strategia di trading
+# ----------------------------
+def trading_strategy():
+    ticker = "BTC-USD"
+    data = yf.download(ticker, period="2d", interval="15m")
+    data['SMA_50'] = data['Close'].rolling(window=50).mean()
+    data['SMA_200'] = data['Close'].rolling(window=200).mean()
 
-positions = client.get_account()
-btc_balance = float([a for a in positions["balances"] if a["asset"]=="BTC"][0]["free"])
-usdt_balance = float([a for a in positions["balances"] if a["asset"]=="USDT"][0]["free"])
+    latest = data.iloc[-1]
+    decision = ""
 
-message = f"📊 Report Trading Bot\nData: {datetime.datetime.now()}\nPrezzo attuale: {price}\n"
+    if latest['SMA_50'] > latest['SMA_200']:
+        decision = "BUY"
+        try:
+            # Esempio ordine di test
+            order = client.create_test_order(
+                symbol='BTCUSDT',
+                side='BUY',
+                type='MARKET',
+                quantity=0.001
+            )
+        except Exception as e:
+            print("Errore ordine di test:", e)
+    elif latest['SMA_50'] < latest['SMA_200']:
+        decision = "SELL"
+    else:
+        decision = "HOLD"
 
-# BUY
-if signal == 1 and usdt_balance > 10:
-    order = client.order_market_buy(symbol=symbol, quantity=quantity)
-    buy_price = float(order["fills"][0]["price"])
-    sl_price = buy_price * 0.98
-    tp_price = buy_price * 1.05
-    message += f"🟢 BUY eseguito a {buy_price}\nStop Loss: {sl_price}\nTake Profit: {tp_price}\n"
+    return f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} → Segnale: {decision}"
 
-# SELL
-elif signal == 0 and btc_balance > 0.0001:
-    order = client.order_market_sell(symbol=symbol, quantity=btc_balance)
-    sell_price = float(order["fills"][0]["price"])
-    message += f"🔴 SELL eseguito a {sell_price}\n"
+# ----------------------------
+# Ciclo principale
+# ----------------------------
+daily_report = []
 
-# NESSUNA OPERAZIONE
-else:
-    message += "⚠️ Nessuna operazione eseguita.\n"
+while True:
+    signal = trading_strategy()
+    print(signal)
+    daily_report.append(signal)
 
-message += f"\nSaldo BTC: {btc_balance}\nSaldo USDT: {usdt_balance}"
+    # Invio report alle 19:00
+    current_time = datetime.datetime.now().strftime("%H:%M")
+    if current_time == "19:00":
+        send_email("Daily Trading Bot Report", "\n".join(daily_report))
+        daily_report = []
 
-send_email("Trading Bot - Report Giornaliero", message)
-print("✅ Bot eseguito, email inviata.")
-
-
+    time.sleep(1800)  # 30 minuti
