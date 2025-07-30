@@ -1,4 +1,4 @@
+python-binance
 yfinance
 pandas
 
-schedule
