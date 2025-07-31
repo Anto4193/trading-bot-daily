@@ -1,56 +1,36 @@
 import yfinance as yf
 import pandas as pd
 import ta
-from binance.client import Client
-import os
-import smtplib
-from email.mime.text import MIMEText
-
-# ---- Config ----
-api_key = os.getenv("BINANCE_API_KEY")
-api_secret = os.getenv("BINANCE_SECRET_KEY")
-email_user = os.getenv("EMAIL_USER")
-email_pass = os.getenv("EMAIL_PASS")
-email_to = os.getenv("EMAIL_TO")
-
-client = Client(api_key, api_secret)
-ticker = "BTCUSDT"
-
-def send_email(subject, message):
-    msg = MIMEText(message)
-    msg["Subject"] = subject
-    msg["From"] = email_user
-    msg["To"] = email_to
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(email_user, email_pass)
-        server.sendmail(email_user, email_to, msg.as_string())
 
 def get_signal():
+    # Scarica i dati di Bitcoin
     data = yf.download("BTC-USD", period="2d", interval="15m")
-    data["MA7"] = data["Close"].rolling(window=7).mean()
-    data["MA25"] = data["Close"].rolling(window=25).mean()
-    data["RSI"] = ta.momentum.RSIIndicator(data["Close"], window=14).rsi()
 
-    last = data.iloc[-1]
-    prev = data.iloc[-2]
+    # Calcolo delle medie mobili
+    data["SMA_20"] = data["Close"].rolling(window=20).mean()
+    data["SMA_50"] = data["Close"].rolling(window=50).mean()
 
-    signal = "HOLD"
+    # Correzione: garantisce che i dati RSI siano 1D
+    close_prices = data["Close"].squeeze()  # Trasforma in Serie 1D
+    data["RSI"] = ta.momentum.RSIIndicator(close_prices, window=14).rsi()
 
-    # Buy signal
-    if prev["MA7"] < prev["MA25"] and last["MA7"] > last["MA25"] and last["RSI"] < 70:
-        signal = "BUY"
+    # Ultima riga per segnali
+    last_row = data.iloc[-1]
 
-    # Sell signal
-    elif prev["MA7"] > prev["MA25"] and last["MA7"] < last["MA25"] and last["RSI"] > 30:
-        signal = "SELL"
-
-    return signal
+    # Logica base di trading
+    if last_row["SMA_20"] > last_row["SMA_50"] and last_row["RSI"] < 70:
+        return "BUY"
+    elif last_row["SMA_20"] < last_row["SMA_50"] and last_row["RSI"] > 30:
+        return "SELL"
+    else:
+        return "HOLD"
 
 def trade():
     signal = get_signal()
-    print(f"Segnale attuale: {signal}")
-    send_email("Segnale Bot BTC", f"Segnale attuale: {signal}")
+    print(f"Segnale di trading attuale: {signal}")
+    # Qui in futuro si può collegare l'ordine reale su Binance Testnet
 
 if __name__ == "__main__":
     trade()
+
 
