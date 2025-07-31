@@ -1,51 +1,56 @@
 import yfinance as yf
 import pandas as pd
-import time
+import ta
 from binance.client import Client
 import os
+import smtplib
+from email.mime.text import MIMEText
 
-# --- CONFIGURAZIONE API BINANCE ---
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
-client = Client(API_KEY, API_SECRET)
+# ---- Config ----
+api_key = os.getenv("BINANCE_API_KEY")
+api_secret = os.getenv("BINANCE_SECRET_KEY")
+email_user = os.getenv("EMAIL_USER")
+email_pass = os.getenv("EMAIL_PASS")
+email_to = os.getenv("EMAIL_TO")
 
-# --- FUNZIONE STRATEGIA DI TRADING ---
-def trading_strategy():
-    ticker = "BTC-USD"
-    data = yf.download(ticker, period="2d", interval="15m")
+client = Client(api_key, api_secret)
+ticker = "BTCUSDT"
 
-    # Calcolo medie mobili
-    data["SMA_50"] = data["Close"].rolling(window=50).mean()
-    data["SMA_200"] = data["Close"].rolling(window=200).mean()
+def send_email(subject, message):
+    msg = MIMEText(message)
+    msg["Subject"] = subject
+    msg["From"] = email_user
+    msg["To"] = email_to
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(email_user, email_pass)
+        server.sendmail(email_user, email_to, msg.as_string())
 
-    # Prendo solo l'ultima candela
-    latest = data.tail(1)
+def get_signal():
+    data = yf.download("BTC-USD", period="2d", interval="15m")
+    data["MA7"] = data["Close"].rolling(window=7).mean()
+    data["MA25"] = data["Close"].rolling(window=25).mean()
+    data["RSI"] = ta.momentum.RSIIndicator(data["Close"], window=14).rsi()
 
-    # Estraggo valori scalari per il confronto
-    sma_50 = latest["SMA_50"].iloc[0]
-    sma_200 = latest["SMA_200"].iloc[0]
+    last = data.iloc[-1]
+    prev = data.iloc[-2]
 
-    if pd.isna(sma_50) or pd.isna(sma_200):
-        return "HOLD"
+    signal = "HOLD"
 
-    if sma_50 > sma_200:
-        return "BUY"
-    elif sma_50 < sma_200:
-        return "SELL"
-    else:
-        return "HOLD"
+    # Buy signal
+    if prev["MA7"] < prev["MA25"] and last["MA7"] > last["MA25"] and last["RSI"] < 70:
+        signal = "BUY"
 
-# --- ESECUZIONE LOOP CONTINUO ---
-while True:
-    signal = trading_strategy()
+    # Sell signal
+    elif prev["MA7"] > prev["MA25"] and last["MA7"] < last["MA25"] and last["RSI"] > 30:
+        signal = "SELL"
+
+    return signal
+
+def trade():
+    signal = get_signal()
     print(f"Segnale attuale: {signal}")
+    send_email("Segnale Bot BTC", f"Segnale attuale: {signal}")
 
-    # Esempio di integrazione ordine Binance (commentato per sicurezza demo)
-    """
-    if signal == "BUY":
-        client.order_market_buy(symbol='BTCUSDT', quantity=0.001)
-    elif signal == "SELL":
-        client.order_market_sell(symbol='BTCUSDT', quantity=0.001)
-    """
+if __name__ == "__main__":
+    trade()
 
-    time.sleep(900)  # 15 minuti
