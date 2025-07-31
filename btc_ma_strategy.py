@@ -1,86 +1,101 @@
-import pandas as pd
-import numpy as np
+import os
 import time
+import pandas as pd
 import requests
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
 
-# 🔑 API Keys Testnet
-API_KEY = "Z41UsiUvJrUiSXZ2cWAXEkyzqscJq5ateXcc9nqkiIl37uIkHpDYmEOPpsjIgMS3"
-API_SECRET = "i4Yy3oAaevaZwkyD6w5EviL3zhXqo4lUZRMA0iBc1y3DImpsasAlXFoCzHqZ3G1n"
+# ==============================
+# 🔹 CONFIGURAZIONE CHIAVI TESTNET
+# ==============================
+API_KEY = os.getenv("BINANCE_API_KEY", "Z41UsiUvJrUiSXZ2cWAXEkyzqscJq5ateXcc9nqkiIl37uIkHpDYmEOPpsjIgMS3")
+API_SECRET = os.getenv("BINANCE_SECRET_KEY", "i4Yy3oAaevaZwkyD6w5EviL3zhXqo4lUZRMA0iBc1y3DImpsasAlXFoCzHqZ3G1n")
 
-# Connessione a Binance Testnet
 client = Client(API_KEY, API_SECRET, testnet=True)
+client.API_URL = 'https://testnet.binance.vision/api'  # ✅ Endpoint corretto
 
-SYMBOL = "BTCUSDT"
-INTERVAL = Client.KLINE_INTERVAL_15MINUTE
-QUANTITY = 0.001  # Quantità piccola per test
+symbol = "BTCUSDT"
+quantity = 0.001  # Quantità BTC per ordine
+interval = "1m"
+lookback = "60"
 
-def get_binance_data():
-    """Scarica dati storici da Binance Testnet."""
-    candles = client.get_klines(symbol=SYMBOL, interval=INTERVAL, limit=100)
-    df = pd.DataFrame(candles, columns=[
-        'timestamp', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'qav', 'trades', 'tbbav', 'tbqav', 'ignore'
-    ])
-    df['close'] = df['close'].astype(float)
-    return df[['timestamp', 'close']]
+# ==============================
+# 🔹 FUNZIONE PER OTTENERE I DATI
+# ==============================
+def get_historical_data():
+    try:
+        candles = client.get_klines(symbol=symbol, interval=interval, limit=100)
+        data = pd.DataFrame(candles, columns=[
+            'time', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'qav', 'trades', 'tb_base_av', 'tb_quote_av', 'ignore'
+        ])
+        data['close'] = data['close'].astype(float)
+        return data
+    except Exception as e:
+        print(f"Errore nel recupero dati: {e}")
+        return None
 
-def calculate_indicators(df):
-    df['SMA_20'] = df['close'].rolling(window=20).mean()
-    df['SMA_50'] = df['close'].rolling(window=50).mean()
-    delta = df['close'].diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    avg_gain = pd.Series(gain).rolling(14).mean()
-    avg_loss = pd.Series(loss).rolling(14).mean()
-    rs = avg_gain / avg_loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    return df
+# ==============================
+# 🔹 STRATEGIA SEMPLICE MA
+# ==============================
+def generate_signal(data):
+    data['SMA_5'] = data['close'].rolling(window=5).mean()
+    data['SMA_20'] = data['close'].rolling(window=20).mean()
 
-def get_signal(df):
-    last = df.iloc[-1]
-    if last["SMA_20"] > last["SMA_50"] and last["RSI"] < 70:
+    if data['SMA_5'].iloc[-1] > data['SMA_20'].iloc[-1]:
         return "BUY"
-    elif last["SMA_20"] < last["SMA_50"] and last["RSI"] > 30:
+    elif data['SMA_5'].iloc[-1] < data['SMA_20'].iloc[-1]:
         return "SELL"
     else:
         return "HOLD"
 
+# ==============================
+# 🔹 FUNZIONE PER INVIARE ORDINI
+# ==============================
 def place_order(signal):
-    if signal == "BUY":
-        order = client.create_test_order(
-            symbol=SYMBOL,
-            side='BUY',
-            type='MARKET',
-            quantity=QUANTITY
-        )
-        print("✅ Ordine BUY simulato:", order)
-    elif signal == "SELL":
-        order = client.create_test_order(
-            symbol=SYMBOL,
-            side='SELL',
-            type='MARKET',
-            quantity=QUANTITY
-        )
-        print("✅ Ordine SELL simulato:", order)
-    else:
-        print("ℹ️ Nessun ordine eseguito.")
+    try:
+        if signal == "BUY":
+            order = client.create_test_order(
+                symbol=symbol,
+                side='BUY',
+                type='MARKET',
+                quantity=quantity
+            )
+            print("✅ Ordine BUY simulato inviato.")
+        elif signal == "SELL":
+            order = client.create_test_order(
+                symbol=symbol,
+                side='SELL',
+                type='MARKET',
+                quantity=quantity
+            )
+            print("✅ Ordine SELL simulato inviato.")
+        else:
+            print("⚠️ Nessuna azione eseguita.")
+    except BinanceAPIException as e:
+        print(f"❌ Errore API Binance: {e.message}")
+    except Exception as e:
+        print(f"❌ Errore imprevisto: {e}")
 
+# ==============================
+# 🔹 CICLO PRINCIPALE
+# ==============================
 def trade():
-    df = get_binance_data()
-    if df.empty:
-        print("⚠️ Nessun dato ricevuto da Binance Testnet.")
-        return
-    df = calculate_indicators(df)
-    signal = get_signal(df)
-    last_price = df['close'].iloc[-1]
-    print(f"📊 Prezzo attuale: {last_price:.2f} | Segnale: {signal}")
-    place_order(signal)
+    while True:
+        data = get_historical_data()
+        if data is not None:
+            signal = generate_signal(data)
+            price = data['close'].iloc[-1]
+            print(f"📊 Prezzo attuale: {price} | Segnale: {signal}")
+            place_order(signal)
+        else:
+            print("⚠️ Nessun dato ricevuto.")
+        time.sleep(60)
 
 if __name__ == "__main__":
-    while True:
-        trade()
-        time.sleep(60)  # Attesa 1 minuto tra i cicli
+    print("🚀 Trading bot avviato su Binance Testnet...")
+    trade()
+
 
 
 
