@@ -1,91 +1,72 @@
-import os
 import time
-import requests
-import pandas as pd
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
+from binance.enums import *
 
-# ==============================
-#  CONFIGURAZIONE
-# ==============================
+# === CONFIGURAZIONE ===
 API_KEY = "WmAQiQrluxCbBjOVcSdS7oZhVUadVWOmKtEPP5FPMra1KpFMn9Wcd69qsvzoWQr0"
 API_SECRET = "brF61s5EKLXTNYf9XXZ2d3WI0h0DIGSQtIVFnGGHRx6OiTAvXmgPlYP9BgDPRXNv"
+PAIR = "BTCUSDT"
+QTY = 0.001  # Quantità di test
+INTERVAL = 30  # secondi tra un controllo e l'altro
 
-SYMBOL = "BTCUSDT"
-QUANTITY = 0.001
-INTERVAL = "1m"
-LIMIT = 100
-
-# ==============================
-#  CLIENT BINANCE TESTNET
-# ==============================
 client = Client(API_KEY, API_SECRET, testnet=True)
-client.API_URL = "https://testnet.binance.vision/api"
 
-# ==============================
-#  FUNZIONI
-# ==============================
-def get_klines():
+# Variabile stato posizione
+position_open = False
+
+# Funzione per ottenere le medie mobili
+def get_signals():
+    klines = client.get_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1MINUTE, limit=20)
+    closes = [float(x[4]) for x in klines]
+    sma5 = sum(closes[-5:]) / 5
+    sma20 = sum(closes) / 20
+    price = closes[-1]
+
+    if sma5 > sma20:
+        return "BUY", price
+    elif sma5 < sma20:
+        return "SELL", price
+    else:
+        return "HOLD", price
+
+# Funzione per loggare le operazioni
+def log_trade(action, price):
+    with open("log_trades.txt", "a") as f:
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {action} | Prezzo: {price}\n")
+
+# Funzione per inviare ordine di test
+def place_order(side):
     try:
-        klines = client.get_klines(symbol=SYMBOL, interval=Client.KLINE_INTERVAL_1MINUTE, limit=LIMIT)
-        data = pd.DataFrame(klines, columns=['time','open','high','low','close','volume','close_time','qav','trades','tb_base_av','tb_quote_av','ignore'])
-        data['close'] = data['close'].astype(float)
-        return data
+        order = client.create_test_order(
+            symbol=PAIR,
+            side=side,
+            type=ORDER_TYPE_MARKET,
+            quantity=QTY
+        )
+        print(f"✅ Ordine {side} inviato (TEST)")
+        log_trade(side, price)
     except Exception as e:
-        print("❌ Errore nel recupero dati:", e)
-        return None
+        print(f"❌ Errore ordine: {e}")
 
-def generate_signal(df):
-    df['SMA_5'] = df['close'].rolling(window=5).mean()
-    df['SMA_20'] = df['close'].rolling(window=20).mean()
+# LOOP principale
+print("🚀 Trading bot avviato su Binance Testnet...")
+while True:
+    signal, price = get_signals()
+    print(f"\n📊 Prezzo attuale: {price} | Segnale: {signal}")
 
-    if df['SMA_5'].iloc[-1] > df['SMA_20'].iloc[-1]:
-        return "BUY"
-    elif df['SMA_5'].iloc[-1] < df['SMA_20'].iloc[-1]:
-        return "SELL"
-    return "HOLD"
+    global position_open
+    if signal == "BUY" and not position_open:
+        place_order(SIDE_BUY)
+        position_open = True
 
-def place_order(signal):
-    try:
-        if signal == "BUY":
-            order = client.create_test_order(
-                symbol=SYMBOL,
-                side='BUY',
-                type='MARKET',
-                quantity=QUANTITY
-            )
-            print("✅ Ordine BUY inviato (TEST)")
-        elif signal == "SELL":
-            order = client.create_test_order(
-                symbol=SYMBOL,
-                side='SELL',
-                type='MARKET',
-                quantity=QUANTITY
-            )
-            print("✅ Ordine SELL inviato (TEST)")
-    except BinanceAPIException as e:
-        print("❌ Errore API Binance:", e.message)
-    except Exception as e:
-        print("⚠️ Errore generico:", e)
+    elif signal == "SELL" and position_open:
+        place_order(SIDE_SELL)
+        position_open = False
 
-def trade():
-    while True:
-        df = get_klines()
-        if df is not None:
-            price = df['close'].iloc[-1]
-            signal = generate_signal(df)
-            print(f"\n📊 Prezzo attuale: {price:.2f} | Segnale: {signal}")
-            if signal in ["BUY", "SELL"]:
-                place_order(signal)
-        time.sleep(10)
+    else:
+        print("⏸ Nessuna nuova operazione.")
 
-# ==============================
-#  AVVIO BOT
-# ==============================
-if __name__ == "__main__":
-    print("🚀 Trading bot avviato su Binance Testnet...")
-    trade()
-
+    time.sleep(INTERVAL)
 
 
 
