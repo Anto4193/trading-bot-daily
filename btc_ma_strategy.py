@@ -1,90 +1,76 @@
 import time
-import datetime
 from binance.client import Client
 from binance.enums import *
 import pandas as pd
-import numpy as np
+import requests
 
+# Inserisci qui le tue chiavi API Testnet
 API_KEY = "WmAQiQrluxCbBjOVcSdS7oZhVUadVWOmKtEPP5FPMra1KpFMn9Wcd69qsvzoWQr0"
 API_SECRET = "brF61s5EKLXTNYf9XXZ2d3WI0h0DIGSQtIVFnGGHRx6OiTAvXmgPlYP9BgDPRXNv"
 
+BASE_URL = "https://testnet.binance.vision"
+
 client = Client(API_KEY, API_SECRET, testnet=True)
-SYMBOL = "BTCUSDT"
-QUANTITY = 0.001  # quantità di test
+client.API_URL = BASE_URL
 
-last_signal = None
-position = None
-entry_price = None
-stop_loss = None
+ticker = "BTCUSDT"
+quantity = 0.001  # Quantità di BTC da comprare/vendere per ordine
 
-# Funzione per ottenere dati storici
-def get_klines():
-    klines = client.get_klines(symbol=SYMBOL, interval=Client.KLINE_INTERVAL_1MINUTE, limit=100)
-    df = pd.DataFrame(klines, columns=['time', 'o', 'h', 'l', 'c', 'v', 'ct', 'qav', 'nt', 'tbbav', 'tbqav', 'ignore'])
-    df['c'] = df['c'].astype(float)
-    return df
+position_open = False  # Per tenere traccia se abbiamo già una posizione aperta
 
-def strategy(df):
-    df['ma_fast'] = df['c'].rolling(window=7).mean()
-    df['ma_slow'] = df['c'].rolling(window=25).mean()
-    if df['ma_fast'].iloc[-1] > df['ma_slow'].iloc[-1]:
-        return "BUY"
-    elif df['ma_fast'].iloc[-1] < df['ma_slow'].iloc[-1]:
-        return "SELL"
-    return "HOLD"
+def get_data(symbol, interval, lookback):
+    url = f"{BASE_URL}/api/v3/klines?symbol={symbol}&interval={interval}&limit={lookback}"
+    data = requests.get(url).json()
+    frame = pd.DataFrame(data)
+    frame = frame.iloc[:, 0:6]
+    frame.columns = ['Time', 'Open', 'High', 'Low', 'Close', 'Volume']
+    frame['Close'] = frame['Close'].astype(float)
+    return frame
 
-def place_order(signal, price):
-    global position, entry_price, stop_loss
-    if signal == "BUY" and position != "LONG":
-        print(f"✅ Entrata LONG a {price}")
-        position = "LONG"
-        entry_price = price
-        stop_loss = price * 0.995
-    elif signal == "SELL" and position != "SHORT":
-        print(f"✅ Entrata SHORT a {price}")
-        position = "SHORT"
-        entry_price = price
-        stop_loss = price * 1.005
+def strategy():
+    df = get_data(ticker, '1m', 50)
+    df['MA5'] = df['Close'].rolling(window=5).mean()
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    if df['MA5'].iloc[-1] > df['MA20'].iloc[-1]:
+        return 'BUY'
+    elif df['MA5'].iloc[-1] < df['MA20'].iloc[-1]:
+        return 'SELL'
+    else:
+        return 'HOLD'
 
-def risk_management(price):
-    global position, entry_price, stop_loss
-    if position == "LONG":
-        if price <= stop_loss:
-            print("🛑 Stop Loss raggiunto. Chiusura LONG.")
-            position = None
-        elif price >= entry_price * 1.002:
-            stop_loss = entry_price  # sposta SL a breakeven
-        elif price >= entry_price * 1.005:
-            print("📈 Aggiungo posizione piramidale LONG")
-    elif position == "SHORT":
-        if price >= stop_loss:
-            print("🛑 Stop Loss raggiunto. Chiusura SHORT.")
-            position = None
-        elif price <= entry_price * 0.998:
-            stop_loss = entry_price
-        elif price <= entry_price * 0.995:
-            print("📉 Aggiungo posizione piramidale SHORT")
+def place_order(signal):
+    global position_open
+    if signal == 'BUY' and not position_open:
+        order = client.create_order(
+            symbol=ticker,
+            side=SIDE_BUY,
+            type=ORDER_TYPE_MARKET,
+            quantity=quantity
+        )
+        print(f"✅ Ordine BUY eseguito: {order['fills'][0]['price']}")
+        position_open = True
+
+    elif signal == 'SELL' and position_open:
+        order = client.create_order(
+            symbol=ticker,
+            side=SIDE_SELL,
+            type=ORDER_TYPE_MARKET,
+            quantity=quantity
+        )
+        print(f"✅ Ordine SELL eseguito: {order['fills'][0]['price']}")
+        position_open = False
 
 def trade():
-    global last_signal
     while True:
-        df = get_klines()
-        signal = strategy(df)
-        price = df['c'].iloc[-1]
-        print(f"\n📊 Prezzo attuale: {price} | Segnale: {signal}")
-
-        if signal != last_signal:
-            place_order(signal, price)
-            last_signal = signal
-
-        if position is not None:
-            risk_management(price)
-
-        time.sleep(5)
+        signal = strategy()
+        print(f"📊 Prezzo attuale: {get_data(ticker, '1m', 1)['Close'].iloc[-1]} | Segnale: {signal}")
+        place_order(signal)
+        time.sleep(10)  # Controlla ogni 10 secondi
 
 if __name__ == "__main__":
-    print("🚀 Trading bot V4.0 avviato su Binance Testnet...")
+    print("🚀 Trading bot avviato su Binance Testnet...")
     trade()
+
 
 
 
