@@ -14,7 +14,7 @@ def get_data():
         data["RSI"] = ta.momentum.RSIIndicator(data["Close"]).rsi()
         return data
     except Exception as e:
-        print(f"Errore nel download dati: {e}")
+        print(f"❌ Errore nel download dati: {e}")
         return pd.DataFrame()
 
 def get_signal():
@@ -28,8 +28,9 @@ def get_signal():
     sma50 = last_row["SMA_50"]
     rsi = last_row["RSI"]
 
+    # Controllo valori validi
     if pd.isna(sma20) or pd.isna(sma50) or pd.isna(rsi):
-        print("⚠️ Indicatori non calcolabili (troppi pochi dati).")
+        print("⚠️ Indicatori non calcolabili (dati insufficienti).")
         return None
 
     if sma20 > sma50 and rsi < 70:
@@ -43,10 +44,10 @@ def trade():
     while True:
         signal = get_signal()
         if signal:
-            print(f"Segnale attuale: {signal}")
+            print(f"📢 Segnale attuale: {signal}")
         else:
-            print("Nessun segnale valido.")
-        time.sleep(60)
+            print("ℹ️ Nessun segnale valido al momento.")
+        time.sleep(60)  # Attende 1 minuto tra le verifiche
 
 if __name__ == "__main__":
     trade()
