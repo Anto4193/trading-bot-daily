@@ -1,4 +1,7 @@
-python-binance
 yfinance
 pandas
+ta
+requests
+python-binance
+schedule
 
