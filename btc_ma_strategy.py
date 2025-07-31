@@ -1,96 +1,91 @@
 import time
-import csv
-from datetime import datetime
+import pandas as pd
+import requests
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
+from binance.enums import *
 
-# Chiavi API Binance Testnet
+# ===== CONFIGURAZIONE =====
 API_KEY = "WmAQiQrluxCbBjOVcSdS7oZhVUadVWOmKtEPP5FPMra1KpFMn9Wcd69qsvzoWQr0"
 API_SECRET = "brF61s5EKLXTNYf9XXZ2d3WI0h0DIGSQtIVFnGGHRx6OiTAvXmgPlYP9BgDPRXNv"
+SYMBOL = "BTCUSDT"
+QUANTITY_PERCENT = 0.02  # 2% del saldo
+INTERVAL = "1m"
+TRADE_ACTIVE = False
+ENTRY_PRICE = 0
+TRAILING_STOP = 0.003  # 0.3%
 
 client = Client(API_KEY, API_SECRET, testnet=True)
 
-PAIR = "BTCUSDT"
-TRADE_QUANTITY = 0.001
-COOLDOWN = 60  # secondi tra operazioni
-last_trade_time = 0
-ENTRY_PRICE = None
-TAKE_PROFIT = 1.002  # +0.2%
-STOP_LOSS = 0.998   # -0.2%
+# ===== FUNZIONI =====
 
-# File log CSV
-with open("trade_log.csv", "a", newline="") as file:
-    writer = csv.writer(file)
-    writer.writerow(["Time", "Signal", "Price", "Action"])
+def get_klines():
+    url = f"https://testnet.binance.vision/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit=100"
+    data = requests.get(url).json()
+    df = pd.DataFrame(data, columns=['time','o','h','l','c','v','ct','q','n','takerb','takerq','ignore'])
+    df['c'] = df['c'].astype(float)
+    return df
 
-def get_price():
-    ticker = client.get_symbol_ticker(symbol=PAIR)
-    return float(ticker['price'])
+def get_rsi(data, period=14):
+    delta = data.diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-def get_moving_averages():
-    klines = client.get_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1MINUTE, limit=50)
-    closes = [float(x[4]) for x in klines]
-    ma7 = sum(closes[-7:]) / 7
-    ma25 = sum(closes[-25:]) / 25
-    return ma7, ma25
+def get_signal():
+    df = get_klines()
+    df['MA5'] = df['c'].rolling(window=5).mean()
+    df['MA20'] = df['c'].rolling(window=20).mean()
+    df['RSI'] = get_rsi(df['c'])
+    if df['MA5'].iloc[-1] > df['MA20'].iloc[-1] and df['RSI'].iloc[-1] < 70:
+        return "BUY", df['c'].iloc[-1]
+    elif df['MA5'].iloc[-1] < df['MA20'].iloc[-1] and df['RSI'].iloc[-1] > 30:
+        return "SELL", df['c'].iloc[-1]
+    else:
+        return "HOLD", df['c'].iloc[-1]
 
-def log_trade(signal, price, action):
-    with open("trade_log.csv", "a", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow([datetime.now().strftime('%Y-%m-%d %H:%M:%S'), signal, price, action])
+def get_balance():
+    try:
+        balance = client.get_asset_balance(asset='USDT')
+        return float(balance['free'])
+    except:
+        return 1000  # fallback testnet
 
-def place_order(signal):
-    global last_trade_time, ENTRY_PRICE
-    current_time = time.time()
-    price = get_price()
+def calculate_quantity(price):
+    balance = get_balance()
+    amount = (balance * QUANTITY_PERCENT) / price
+    return round(amount, 5)
 
-    if signal == "BUY":
-        if current_time - last_trade_time < COOLDOWN:
-            return
-        try:
-            client.create_test_order(symbol=PAIR, side='BUY', type='MARKET', quantity=TRADE_QUANTITY)
-            ENTRY_PRICE = price
-            print(f"✅ Ordine BUY inviato a {price}")
-            log_trade(signal, price, "BUY")
-            last_trade_time = current_time
-        except BinanceAPIException as e:
-            print("❌ Errore API Binance:", e)
+def place_order(signal, price):
+    global TRADE_ACTIVE, ENTRY_PRICE
+    qty = calculate_quantity(price)
+    if signal == "BUY" and not TRADE_ACTIVE:
+        print(f"✅ Ordine BUY inviato (TEST) - Prezzo: {price}")
+        TRADE_ACTIVE = True
+        ENTRY_PRICE = price
+    elif signal == "SELL" and TRADE_ACTIVE:
+        print(f"✅ Ordine SELL inviato (TEST) - Prezzo: {price}")
+        TRADE_ACTIVE = False
+        ENTRY_PRICE = 0
 
-    elif signal == "SELL" and ENTRY_PRICE is not None:
-        if current_time - last_trade_time < COOLDOWN:
-            return
-        try:
-            client.create_test_order(symbol=PAIR, side='SELL', type='MARKET', quantity=TRADE_QUANTITY)
-            print(f"✅ Ordine SELL inviato a {price}")
-            log_trade(signal, price, "SELL")
-            last_trade_time = current_time
-        except BinanceAPIException as e:
-            print("❌ Errore API Binance:", e)
+def check_trailing_stop(current_price):
+    global TRADE_ACTIVE, ENTRY_PRICE
+    if TRADE_ACTIVE and current_price < ENTRY_PRICE * (1 - TRAILING_STOP):
+        print(f"🔴 Trailing Stop attivato - Chiusura posizione a {current_price}")
+        TRADE_ACTIVE = False
+        ENTRY_PRICE = 0
 
-def trade():
-    global ENTRY_PRICE
-    ma7, ma25 = get_moving_averages()
-    price = get_price()
-    signal = "HOLD"
-
-    if ma7 > ma25:
-        signal = "BUY"
-    elif ma7 < ma25 and ENTRY_PRICE is not None:
-        signal = "SELL"
-
-    if ENTRY_PRICE:
-        if price >= ENTRY_PRICE * TAKE_PROFIT:
-            signal = "SELL"
-        elif price <= ENTRY_PRICE * STOP_LOSS:
-            signal = "SELL"
-
-    print(f"\n📊 Prezzo attuale: {price} | Segnale: {signal}")
-    place_order(signal)
-
+# ===== LOOP PRINCIPALE =====
+print("🚀 Trading bot v2 avviato su Binance Testnet...")
 while True:
-    trade()
+    signal, price = get_signal()
+    print(f"📊 Prezzo attuale: {price} | Segnale: {signal}")
+    check_trailing_stop(price)
+    place_order(signal, price)
     time.sleep(10)
-
 
 
 
