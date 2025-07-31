@@ -1,91 +1,90 @@
 import time
-import pandas as pd
-import requests
+import datetime
 from binance.client import Client
 from binance.enums import *
+import pandas as pd
+import numpy as np
 
-# ===== CONFIGURAZIONE =====
 API_KEY = "WmAQiQrluxCbBjOVcSdS7oZhVUadVWOmKtEPP5FPMra1KpFMn9Wcd69qsvzoWQr0"
 API_SECRET = "brF61s5EKLXTNYf9XXZ2d3WI0h0DIGSQtIVFnGGHRx6OiTAvXmgPlYP9BgDPRXNv"
-SYMBOL = "BTCUSDT"
-QUANTITY_PERCENT = 0.02  # 2% del saldo
-INTERVAL = "1m"
-TRADE_ACTIVE = False
-ENTRY_PRICE = 0
-TRAILING_STOP = 0.003  # 0.3%
 
 client = Client(API_KEY, API_SECRET, testnet=True)
+SYMBOL = "BTCUSDT"
+QUANTITY = 0.001  # quantità di test
 
-# ===== FUNZIONI =====
+last_signal = None
+position = None
+entry_price = None
+stop_loss = None
 
+# Funzione per ottenere dati storici
 def get_klines():
-    url = f"https://testnet.binance.vision/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit=100"
-    data = requests.get(url).json()
-    df = pd.DataFrame(data, columns=['time','o','h','l','c','v','ct','q','n','takerb','takerq','ignore'])
+    klines = client.get_klines(symbol=SYMBOL, interval=Client.KLINE_INTERVAL_1MINUTE, limit=100)
+    df = pd.DataFrame(klines, columns=['time', 'o', 'h', 'l', 'c', 'v', 'ct', 'qav', 'nt', 'tbbav', 'tbqav', 'ignore'])
     df['c'] = df['c'].astype(float)
     return df
 
-def get_rsi(data, period=14):
-    delta = data.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
-def get_signal():
-    df = get_klines()
-    df['MA5'] = df['c'].rolling(window=5).mean()
-    df['MA20'] = df['c'].rolling(window=20).mean()
-    df['RSI'] = get_rsi(df['c'])
-    if df['MA5'].iloc[-1] > df['MA20'].iloc[-1] and df['RSI'].iloc[-1] < 70:
-        return "BUY", df['c'].iloc[-1]
-    elif df['MA5'].iloc[-1] < df['MA20'].iloc[-1] and df['RSI'].iloc[-1] > 30:
-        return "SELL", df['c'].iloc[-1]
-    else:
-        return "HOLD", df['c'].iloc[-1]
-
-def get_balance():
-    try:
-        balance = client.get_asset_balance(asset='USDT')
-        return float(balance['free'])
-    except:
-        return 1000  # fallback testnet
-
-def calculate_quantity(price):
-    balance = get_balance()
-    amount = (balance * QUANTITY_PERCENT) / price
-    return round(amount, 5)
+def strategy(df):
+    df['ma_fast'] = df['c'].rolling(window=7).mean()
+    df['ma_slow'] = df['c'].rolling(window=25).mean()
+    if df['ma_fast'].iloc[-1] > df['ma_slow'].iloc[-1]:
+        return "BUY"
+    elif df['ma_fast'].iloc[-1] < df['ma_slow'].iloc[-1]:
+        return "SELL"
+    return "HOLD"
 
 def place_order(signal, price):
-    global TRADE_ACTIVE, ENTRY_PRICE
-    qty = calculate_quantity(price)
-    if signal == "BUY" and not TRADE_ACTIVE:
-        print(f"✅ Ordine BUY inviato (TEST) - Prezzo: {price}")
-        TRADE_ACTIVE = True
-        ENTRY_PRICE = price
-    elif signal == "SELL" and TRADE_ACTIVE:
-        print(f"✅ Ordine SELL inviato (TEST) - Prezzo: {price}")
-        TRADE_ACTIVE = False
-        ENTRY_PRICE = 0
+    global position, entry_price, stop_loss
+    if signal == "BUY" and position != "LONG":
+        print(f"✅ Entrata LONG a {price}")
+        position = "LONG"
+        entry_price = price
+        stop_loss = price * 0.995
+    elif signal == "SELL" and position != "SHORT":
+        print(f"✅ Entrata SHORT a {price}")
+        position = "SHORT"
+        entry_price = price
+        stop_loss = price * 1.005
 
-def check_trailing_stop(current_price):
-    global TRADE_ACTIVE, ENTRY_PRICE
-    if TRADE_ACTIVE and current_price < ENTRY_PRICE * (1 - TRAILING_STOP):
-        print(f"🔴 Trailing Stop attivato - Chiusura posizione a {current_price}")
-        TRADE_ACTIVE = False
-        ENTRY_PRICE = 0
+def risk_management(price):
+    global position, entry_price, stop_loss
+    if position == "LONG":
+        if price <= stop_loss:
+            print("🛑 Stop Loss raggiunto. Chiusura LONG.")
+            position = None
+        elif price >= entry_price * 1.002:
+            stop_loss = entry_price  # sposta SL a breakeven
+        elif price >= entry_price * 1.005:
+            print("📈 Aggiungo posizione piramidale LONG")
+    elif position == "SHORT":
+        if price >= stop_loss:
+            print("🛑 Stop Loss raggiunto. Chiusura SHORT.")
+            position = None
+        elif price <= entry_price * 0.998:
+            stop_loss = entry_price
+        elif price <= entry_price * 0.995:
+            print("📉 Aggiungo posizione piramidale SHORT")
 
-# ===== LOOP PRINCIPALE =====
-print("🚀 Trading bot v2 avviato su Binance Testnet...")
-while True:
-    signal, price = get_signal()
-    print(f"📊 Prezzo attuale: {price} | Segnale: {signal}")
-    check_trailing_stop(price)
-    place_order(signal, price)
-    time.sleep(10)
+def trade():
+    global last_signal
+    while True:
+        df = get_klines()
+        signal = strategy(df)
+        price = df['c'].iloc[-1]
+        print(f"\n📊 Prezzo attuale: {price} | Segnale: {signal}")
+
+        if signal != last_signal:
+            place_order(signal, price)
+            last_signal = signal
+
+        if position is not None:
+            risk_management(price)
+
+        time.sleep(5)
+
+if __name__ == "__main__":
+    print("🚀 Trading bot V4.0 avviato su Binance Testnet...")
+    trade()
 
 
 
