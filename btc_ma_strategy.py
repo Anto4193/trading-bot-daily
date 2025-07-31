@@ -1,36 +1,37 @@
 import yfinance as yf
 import pandas as pd
 import ta
+import time
 
-def get_signal():
-    # Scarica i dati di Bitcoin
+def get_data():
     data = yf.download("BTC-USD", period="2d", interval="15m")
-
-    # Calcolo delle medie mobili
     data["SMA_20"] = data["Close"].rolling(window=20).mean()
     data["SMA_50"] = data["Close"].rolling(window=50).mean()
+    data["RSI"] = ta.momentum.RSIIndicator(data["Close"], window=14).rsi()
+    return data
 
-    # Correzione: garantisce che i dati RSI siano 1D
-    close_prices = data["Close"].squeeze()  # Trasforma in Serie 1D
-    data["RSI"] = ta.momentum.RSIIndicator(close_prices, window=14).rsi()
+def get_signal():
+    data = get_data()
+    last_row = data.tail(1)
+    sma20 = last_row["SMA_20"].values[0]
+    sma50 = last_row["SMA_50"].values[0]
+    rsi = last_row["RSI"].values[0]
 
-    # Ultima riga per segnali
-    last_row = data.iloc[-1]
-
-    # Logica base di trading
-    if last_row["SMA_20"] > last_row["SMA_50"] and last_row["RSI"] < 70:
+    if sma20 > sma50 and rsi < 70:
         return "BUY"
-    elif last_row["SMA_20"] < last_row["SMA_50"] and last_row["RSI"] > 30:
+    elif sma20 < sma50 and rsi > 30:
         return "SELL"
     else:
         return "HOLD"
 
 def trade():
     signal = get_signal()
-    print(f"Segnale di trading attuale: {signal}")
-    # Qui in futuro si può collegare l'ordine reale su Binance Testnet
+    print(f"Signal: {signal}")
 
 if __name__ == "__main__":
-    trade()
+    while True:
+        trade()
+        time.sleep(60)
+
 
 
