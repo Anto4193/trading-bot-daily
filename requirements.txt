@@ -1,6 +1,5 @@
-yfinance
-pandas
-numpy
-ta
-
+yfinance==0.2.40
+pandas==2.2.2
+ta==0.10.2
+numpy==1.26.4
 
