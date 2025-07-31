@@ -1,56 +1,86 @@
-import yfinance as yf
 import pandas as pd
-import ta
+import numpy as np
 import time
+import requests
+from binance.client import Client
 
-def get_data():
-    try:
-        data = yf.download("BTC-USD", period="2d", interval="15m")
-        if data.empty:
-            print("⚠️ Nessun dato ricevuto da Yahoo Finance.")
-            return pd.DataFrame()
-        data["SMA_20"] = data["Close"].rolling(window=20).mean()
-        data["SMA_50"] = data["Close"].rolling(window=50).mean()
-        data["RSI"] = ta.momentum.RSIIndicator(data["Close"]).rsi()
-        return data
-    except Exception as e:
-        print(f"❌ Errore nel download dati: {e}")
-        return pd.DataFrame()
+# 🔑 API Keys Testnet
+API_KEY = "Z41UsiUvJrUiSXZ2cWAXEkyzqscJq5ateXcc9nqkiIl37uIkHpDYmEOPpsjIgMS3"
+API_SECRET = "i4Yy3oAaevaZwkyD6w5EviL3zhXqo4lUZRMA0iBc1y3DImpsasAlXFoCzHqZ3G1n"
 
-def get_signal():
-    df = get_data()
-    if df.empty or len(df) == 0:
-        print("⚠️ Dati non disponibili, nessun segnale generato.")
-        return None
-    
-    last_row = df.iloc[-1]
-    sma20 = last_row["SMA_20"]
-    sma50 = last_row["SMA_50"]
-    rsi = last_row["RSI"]
+# Connessione a Binance Testnet
+client = Client(API_KEY, API_SECRET, testnet=True)
 
-    # Controllo valori validi
-    if pd.isna(sma20) or pd.isna(sma50) or pd.isna(rsi):
-        print("⚠️ Indicatori non calcolabili (dati insufficienti).")
-        return None
+SYMBOL = "BTCUSDT"
+INTERVAL = Client.KLINE_INTERVAL_15MINUTE
+QUANTITY = 0.001  # Quantità piccola per test
 
-    if sma20 > sma50 and rsi < 70:
+def get_binance_data():
+    """Scarica dati storici da Binance Testnet."""
+    candles = client.get_klines(symbol=SYMBOL, interval=INTERVAL, limit=100)
+    df = pd.DataFrame(candles, columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'qav', 'trades', 'tbbav', 'tbqav', 'ignore'
+    ])
+    df['close'] = df['close'].astype(float)
+    return df[['timestamp', 'close']]
+
+def calculate_indicators(df):
+    df['SMA_20'] = df['close'].rolling(window=20).mean()
+    df['SMA_50'] = df['close'].rolling(window=50).mean()
+    delta = df['close'].diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(14).mean()
+    avg_loss = pd.Series(loss).rolling(14).mean()
+    rs = avg_gain / avg_loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    return df
+
+def get_signal(df):
+    last = df.iloc[-1]
+    if last["SMA_20"] > last["SMA_50"] and last["RSI"] < 70:
         return "BUY"
-    elif sma20 < sma50 and rsi > 30:
+    elif last["SMA_20"] < last["SMA_50"] and last["RSI"] > 30:
         return "SELL"
     else:
         return "HOLD"
 
+def place_order(signal):
+    if signal == "BUY":
+        order = client.create_test_order(
+            symbol=SYMBOL,
+            side='BUY',
+            type='MARKET',
+            quantity=QUANTITY
+        )
+        print("✅ Ordine BUY simulato:", order)
+    elif signal == "SELL":
+        order = client.create_test_order(
+            symbol=SYMBOL,
+            side='SELL',
+            type='MARKET',
+            quantity=QUANTITY
+        )
+        print("✅ Ordine SELL simulato:", order)
+    else:
+        print("ℹ️ Nessun ordine eseguito.")
+
 def trade():
-    while True:
-        signal = get_signal()
-        if signal:
-            print(f"📢 Segnale attuale: {signal}")
-        else:
-            print("ℹ️ Nessun segnale valido al momento.")
-        time.sleep(60)  # Attende 1 minuto tra le verifiche
+    df = get_binance_data()
+    if df.empty:
+        print("⚠️ Nessun dato ricevuto da Binance Testnet.")
+        return
+    df = calculate_indicators(df)
+    signal = get_signal(df)
+    last_price = df['close'].iloc[-1]
+    print(f"📊 Prezzo attuale: {last_price:.2f} | Segnale: {signal}")
+    place_order(signal)
 
 if __name__ == "__main__":
-    trade()
+    while True:
+        trade()
+        time.sleep(60)  # Attesa 1 minuto tra i cicli
 
 
 
