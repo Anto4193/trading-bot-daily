@@ -1,74 +1,96 @@
 import time
-import pandas as pd
+import os
+import math
 from binance.client import Client
+from binance.enums import *
 from binance.exceptions import BinanceAPIException
 
-# 🔑 Chiavi API Testnet Binance
-API_KEY = "WmAQiQrluxCbBjOVcSdS7oZhVUadVWOmKtEPP5FPMra1KpFMn9Wcd69qsvzoWQr0"
-API_SECRET = "brF61s5EKLXTNYf9XXZ2d3WI0h0DIGSQtIVFnGGHRx6OiTAvXmgPlYP9BgDPRXNv"
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
 
-# ✅ Connessione a Binance Testnet
 client = Client(API_KEY, API_SECRET, testnet=True)
 
-SYMBOL = "BTCUSDT"
-QUANTITY = 0.001  # quantità BTC da acquistare/vendere
+symbol = "BTCUSDT"
+quantity = 0.001
+short_window = 7
+long_window = 25
+interval = Client.KLINE_INTERVAL_1MINUTE
 
-def get_data():
-    """Scarica dati recenti dal mercato (ultime 50 candele)."""
-    klines = client.get_klines(symbol=SYMBOL, interval=Client.KLINE_INTERVAL_1MINUTE, limit=50)
-    data = pd.DataFrame(klines, columns=['time','open','high','low','close','volume','close_time','q','n','taker_base','taker_quote','ignore'])
-    data['close'] = data['close'].astype(float)
-    return data
+order_history = []  # Per tenere traccia degli ultimi ordini
+profit_cumulative = 0.0
 
-def generate_signal(df):
-    """Strategia basata su medie mobili semplici."""
-    short_ma = df['close'].rolling(window=5).mean()
-    long_ma = df['close'].rolling(window=20).mean()
+def get_balance_usdt():
+    balances = client.get_account()['balances']
+    for b in balances:
+        if b['asset'] == 'USDT':
+            return float(b['free'])
+    return 0.0
 
-    if short_ma.iloc[-1] > long_ma.iloc[-1]:
-        return "BUY"
-    elif short_ma.iloc[-1] < long_ma.iloc[-1]:
-        return "SELL"
-    else:
-        return "HOLD"
+def get_klines():
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=long_window+1)
+    closes = [float(k[4]) for k in klines]
+    return closes
 
-def place_order(signal):
-    """Invia un ordine reale su Binance Testnet."""
+def moving_averages(prices):
+    short_ma = sum(prices[-short_window:]) / short_window
+    long_ma = sum(prices[-long_window:]) / long_window
+    return short_ma, long_ma
+
+def place_order(side, qty):
+    global profit_cumulative
     try:
-        if signal == "BUY":
-            order = client.create_order(
-                symbol=SYMBOL,
-                side="BUY",
-                type="MARKET",
-                quantity=QUANTITY
-            )
-            print(f"✅ BUY eseguito - ID ordine: {order['orderId']}")
-        elif signal == "SELL":
-            order = client.create_order(
-                symbol=SYMBOL,
-                side="SELL",
-                type="MARKET",
-                quantity=QUANTITY
-            )
-            print(f"✅ SELL eseguito - ID ordine: {order['orderId']}")
-        else:
-            print("⏸ Nessuna azione (HOLD)")
+        order = client.create_order(
+            symbol=symbol,
+            side=side,
+            type=ORDER_TYPE_MARKET,
+            quantity=qty
+        )
+        price = float(order['fills'][0]['price'])
+        order_history.append({"id": order['orderId'], "side": side, "price": price})
+        if len(order_history) > 5:
+            order_history.pop(0)
+
+        print(f"✅ {side} eseguito - ID: {order['orderId']} - Prezzo: {price}")
+
+        # Aggiorna saldo
+        saldo = get_balance_usdt()
+        print(f"💰 Saldo attuale: {saldo:.2f} USDT")
+
+        # Stima PnL (solo se SELL dopo BUY)
+        if side == "SELL" and len(order_history) >= 2:
+            last_buy = [o for o in order_history if o['side'] == "BUY"][-1]
+            pnl = (price - last_buy['price']) * (qty)
+            profit_cumulative += pnl
+            print(f"📈 Profitto cumulativo stimato: {profit_cumulative:.2f} USDT")
+
+        return order
+
     except BinanceAPIException as e:
-        print(f"❌ Errore Binance: {e}")
+        print(f"❌ Errore API Binance: {e.message}")
+        return None
 
-def trade():
-    while True:
-        df = get_data()
-        signal = generate_signal(df)
-        current_price = df['close'].iloc[-1]
-        print(f"📊 Prezzo attuale: {current_price:.2f} | Segnale: {signal}")
-        if signal in ["BUY", "SELL"]:
-            place_order(signal)
-        time.sleep(60)
+print("🚀 Trading bot avviato su Binance Testnet (ordini REALI)...")
 
-if __name__ == "__main__":
-    print("🚀 Trading bot avviato su Binance Testnet (ordini REALI)...")
-    trade()
+while True:
+    try:
+        prices = get_klines()
+        short_ma, long_ma = moving_averages(prices)
+        last_price = prices[-1]
+
+        signal = "BUY" if short_ma > long_ma else "SELL"
+        print(f"\n📊 Prezzo attuale: {last_price} | Segnale: {signal}")
+
+        place_order(signal, quantity)
+
+        print("📜 Ultimi ordini registrati:")
+        for o in order_history:
+            print(f"   • {o['side']} @ {o['price']} (ID {o['id']})")
+
+    except Exception as e:
+        print(f"⚠️ Errore nel ciclo principale: {str(e)}")
+
+    time.sleep(60)
+
 
 
 
