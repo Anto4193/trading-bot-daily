@@ -1,75 +1,69 @@
 import os
 import time
+import logging
 from binance.client import Client
-from binance.enums import *
+from binance.exceptions import BinanceAPIException
 
-# Leggi le API Key dalle variabili di ambiente
-API_KEY = os.getenv('BINANCE_API_KEY')
-API_SECRET = os.getenv('BINANCE_API_SECRET')
+# === CONFIGURAZIONE ===
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
 
-print(f"DEBUG API_KEY: {API_KEY}")
-print(f"DEBUG API_SECRET: {'PRESENT' if API_SECRET else 'MISSING'}")
+# Attiva log
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
-# Inizializza client Binance con endpoint Testnet
-client = Client(API_KEY, API_SECRET)
-client.API_URL = 'https://testnet.binancefuture.com/fapi'
+# === CONNESSIONE A BINANCE TESTNET ===
+client = Client(API_KEY, API_SECRET, testnet=True)
+logging.info("✅ Connessione a Binance Testnet avviata...")
 
-symbol = 'BTCUSDT'
-quantity = 0.001  # Quantità di test
-interval = '1m'
-fast_ma = 7
-slow_ma = 25
+# Parametri di trading
+symbol = "BTCUSDT"
+quantity = 0.001
+fast_ma_period = 5
+slow_ma_period = 15
+interval = "1m"
 
-# Funzione per ottenere dati storici
-def get_klines():
-    candles = client.futures_klines(symbol=symbol, interval=interval, limit=slow_ma+1)
-    closes = [float(c[4]) for c in candles]
-    return closes
+def get_klines(symbol, interval, limit):
+    try:
+        return client.get_klines(symbol=symbol, interval=interval, limit=limit)
+    except BinanceAPIException as e:
+        logging.error(f"Errore API: {e}")
+        return []
 
-# Funzione per calcolare la media mobile
-def moving_average(data, period):
-    return sum(data[-period:]) / period
+def get_moving_average(data, period):
+    closes = [float(x[4]) for x in data]
+    return sum(closes[-period:]) / period
 
-# Funzione principale del bot
-def run_bot():
-    print("🚀 Trading bot avviato su Binance Testnet (ordini REALI)...")
-    while True:
-        try:
-            closes = get_klines()
-            fast = moving_average(closes, fast_ma)
-            slow = moving_average(closes, slow_ma)
-            current_price = closes[-1]
+while True:
+    try:
+        klines = get_klines(symbol, interval, slow_ma_period)
+        if len(klines) < slow_ma_period:
+            logging.warning("Dati insufficienti per calcolare le medie mobili")
+            time.sleep(10)
+            continue
 
-            print(f"\n📊 Prezzo attuale: {current_price} | Fast MA: {fast:.2f} | Slow MA: {slow:.2f}")
+        fast_ma = get_moving_average(klines, fast_ma_period)
+        slow_ma = get_moving_average(klines, slow_ma_period)
+        current_price = float(klines[-1][4])
 
-            if fast > slow:
-                order = client.futures_create_order(
-                    symbol=symbol,
-                    side=SIDE_BUY,
-                    type=ORDER_TYPE_MARKET,
-                    quantity=quantity
-                )
-                print(f"✅ BUY eseguito - ID ordine: {order['orderId']}")
-            elif fast < slow:
-                order = client.futures_create_order(
-                    symbol=symbol,
-                    side=SIDE_SELL,
-                    type=ORDER_TYPE_MARKET,
-                    quantity=quantity
-                )
-                print(f"✅ SELL eseguito - ID ordine: {order['orderId']}")
+        logging.info(f"📊 Prezzo: {current_price} | Fast MA: {fast_ma:.2f} | Slow MA: {slow_ma:.2f}")
 
-        except Exception as e:
-            print(f"⚠️ Errore nel ciclo principale: {e}")
+        # Segnale BUY
+        if fast_ma > slow_ma:
+            try:
+                order = client.order_market_buy(symbol=symbol, quantity=quantity)
+                logging.info("✅ Ordine BUY eseguito")
+            except BinanceAPIException as e:
+                logging.error(f"Errore ordine BUY: {e}")
 
-        time.sleep(10)
+        # Segnale SELL
+        elif fast_ma < slow_ma:
+            try:
+                order = client.order_market_sell(symbol=symbol, quantity=quantity)
+                logging.info("✅ Ordine SELL eseguito")
+            except BinanceAPIException as e:
+                logging.error(f"Errore ordine SELL: {e}")
 
-if __name__ == "__main__":
-    run_bot()
+    except Exception as e:
+        logging.error(f"⚠️ Errore nel ciclo principale: {e}")
 
-
-
-
-
-
-
+    time.sleep(10)
