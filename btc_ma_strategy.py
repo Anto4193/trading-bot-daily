@@ -1,63 +1,80 @@
 import time
+from binance.client import Client
+from binance.enums import *
 import pandas as pd
 import numpy as np
-from binance.client import Client
+import os
 
-# Configurazione API Binance (Testnet)
-API_KEY = "Z41UsiUvJrUiSXZ2cWAXEkyzqscJq5ateXcc9nqkiIl37uIkHpDYmEOPpsjIgMS3"
-API_SECRET = "i4Yy3oAaevaZwkyD6w5EviL3zhXqo4lUZRMA0iBc1y3DImpsasAlXFoCzHqZ3G1n"
+# ==============================
+# CONFIGURAZIONE
+# ==============================
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
 
 client = Client(API_KEY, API_SECRET, testnet=True)
 
-# Parametri strategia
 SYMBOL = "BTCUSDT"
-INTERVAL = Client.KLINE_INTERVAL_1HOUR
-LOOKBACK_SHORT = 10
-LOOKBACK_LONG = 50
-TRAILING_STOP_PCT = 0.10
 QUANTITY = 0.001  # quantità BTC da acquistare
+INTERVAL = Client.KLINE_INTERVAL_1HOUR
+LOOKBACK = "100 hours"
+
+SHORT_MA = 20
+LONG_MA = 50
+TRAILING_STOP = 0.03  # 3% di trailing stop
 
 position_open = False
-entry_price = 0.0
-max_price = 0.0
+buy_price = 0
+max_price = 0
 
-def get_data(symbol, interval, limit=100):
-    """Scarica i dati storici da Binance."""
-    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-    data = pd.DataFrame(klines, columns=[
-        'timestamp','open','high','low','close','volume','close_time',
-        'quote_asset_volume','number_of_trades','taker_buy_base','taker_buy_quote','ignore'
-    ])
-    data["close"] = data["close"].astype(float)
-    return data
+# ==============================
+# FUNZIONI
+# ==============================
+def get_data(symbol, interval, lookback):
+    """Scarica i dati storici da Binance"""
+    frame = pd.DataFrame(client.get_historical_klines(symbol, interval, lookback))
+    frame = frame.iloc[:, 0:6]
+    frame.columns = ['Time', 'Open', 'High', 'Low', 'Close', 'Volume']
+    frame = frame.set_index('Time')
+    frame.index = pd.to_datetime(frame.index, unit='ms')
+    frame = frame.astype(float)
+    return frame
 
+# ==============================
+# LOOP PRINCIPALE
+# ==============================
 while True:
     try:
-        # Scarica dati più recenti
-        df = get_data(SYMBOL, INTERVAL)
+        df = get_data(SYMBOL, INTERVAL, LOOKBACK)
+        short_ma = df['Close'].rolling(SHORT_MA).mean().iloc[-1]
+        long_ma = df['Close'].rolling(LONG_MA).mean().iloc[-1]
+        price = df['Close'].iloc[-1]
 
-        # Calcola medie mobili
-        short_ma = df["close"].tail(LOOKBACK_SHORT).mean()
-        long_ma = df["close"].tail(LOOKBACK_LONG).mean()
-        price = df["close"].iloc[-1]
-
-        global position_open, entry_price, max_price
-
-        # Entrata LONG
+        # ===== ENTRATA =====
         if not position_open and short_ma > long_ma:
             order = client.order_market_buy(
                 symbol=SYMBOL,
                 quantity=QUANTITY
             )
-            entry_price = price
-            max_price = price
             position_open = True
-            print(f"💰 Entrata LONG a {price}")
+            buy_price = price
+            max_price = price
+            print(f"✅ Acquisto a {price}")
 
-        # Aggiorna trailing stop e valuta uscita
-        if position_open:
+        # ===== USCITA =====
+        elif position_open:
             max_price = max(max_price, price)
-            stop_price = max_price * (1 - TRAILING_STOP_PCT)
+            stop_price = max_price * (1 - TRAILING_STOP)
 
             if price <= stop_price or short_ma < long_ma:
                 order = client.order_market_sell(
+                    symbol=SYMBOL,
+                    quantity=QUANTITY
+                )
+                position_open = False
+                print(f"🚨 Vendita a {price} (Trailing Stop attivato)")
+
+        time.sleep(60)  # 1 minuto tra i cicli
+
+    except Exception as e:
+        print(f"Errore: {e}")
+        time.sleep(60)
