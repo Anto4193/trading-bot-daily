@@ -4,66 +4,73 @@ import logging
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
-# === CONFIGURAZIONE ===
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
+# ==============================
+# CONFIGURAZIONE LOGGING
+# ==============================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
-# Attiva log
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+# ==============================
+# CONFIGURAZIONE API BINANCE TESTNET
+# ==============================
+API_KEY = os.getenv("BINANCE_API_KEY", "Z41UsiUvJrUiSXZ2cWAXEkyzqscJq5ateXcc9nqkiIl37uIkHpDYmEOPpsjIgMS3")
+API_SECRET = os.getenv("BINANCE_API_SECRET", "i4Yy3oAaevaZwkyD6w5EviL3zhXqo4lUZRMA0iBc1y3DImpsasAlXFoCzHqZ3G1n")
 
-# === CONNESSIONE A BINANCE TESTNET ===
 client = Client(API_KEY, API_SECRET, testnet=True)
-logging.info("✅ Connessione a Binance Testnet avviata...")
 
-# Parametri di trading
-symbol = "BTCUSDT"
-quantity = 0.001
-fast_ma_period = 5
-slow_ma_period = 15
-interval = "1m"
-
-def get_klines(symbol, interval, limit):
+# ==============================
+# FUNZIONE DI TEST CONNESSIONE
+# ==============================
+def test_connection():
     try:
-        return client.get_klines(symbol=symbol, interval=interval, limit=limit)
+        account = client.get_account()
+        logging.info("✅ Connessione API Testnet riuscita - Account attivo.")
+        return True
     except BinanceAPIException as e:
-        logging.error(f"Errore API: {e}")
-        return []
+        logging.error(f"❌ Errore connessione API: {e.message}")
+        return False
 
-def get_moving_average(data, period):
-    closes = [float(x[4]) for x in data]
-    return sum(closes[-period:]) / period
-
-while True:
+# ==============================
+# FUNZIONE STRATEGIA SEMPLICE (MA CROSSOVER)
+# ==============================
+def moving_average_strategy(symbol="BTCUSDT", qty=0.001):
     try:
-        klines = get_klines(symbol, interval, slow_ma_period)
-        if len(klines) < slow_ma_period:
-            logging.warning("Dati insufficienti per calcolare le medie mobili")
-            time.sleep(10)
-            continue
+        klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1MINUTE, limit=20)
+        closes = [float(x[4]) for x in klines]
 
-        fast_ma = get_moving_average(klines, fast_ma_period)
-        slow_ma = get_moving_average(klines, slow_ma_period)
-        current_price = float(klines[-1][4])
+        fast_ma = sum(closes[-5:]) / 5
+        slow_ma = sum(closes) / 20
+        current_price = closes[-1]
 
-        logging.info(f"📊 Prezzo: {current_price} | Fast MA: {fast_ma:.2f} | Slow MA: {slow_ma:.2f}")
+        logging.info(f"📊 Prezzo: {current_price} | Fast MA: {fast_ma} | Slow MA: {slow_ma}")
 
-        # Segnale BUY
         if fast_ma > slow_ma:
             try:
-                order = client.order_market_buy(symbol=symbol, quantity=quantity)
-                logging.info("✅ Ordine BUY eseguito")
+                client.order_market_buy(symbol=symbol, quantity=qty)
+                logging.info("✅ Ordine BUY eseguito.")
             except BinanceAPIException as e:
-                logging.error(f"Errore ordine BUY: {e}")
-
-        # Segnale SELL
+                logging.error(f"Errore ordine BUY: {e.message}")
         elif fast_ma < slow_ma:
             try:
-                order = client.order_market_sell(symbol=symbol, quantity=quantity)
-                logging.info("✅ Ordine SELL eseguito")
+                client.order_market_sell(symbol=symbol, quantity=qty)
+                logging.info("✅ Ordine SELL eseguito.")
             except BinanceAPIException as e:
-                logging.error(f"Errore ordine SELL: {e}")
-
+                logging.error(f"Errore ordine SELL: {e.message}")
     except Exception as e:
-        logging.error(f"⚠️ Errore nel ciclo principale: {e}")
+        logging.error(f"⚠️ Errore strategia: {e}")
 
-    time.sleep(10)
+# ==============================
+# MAIN LOOP
+# ==============================
+if __name__ == "__main__":
+    if not test_connection():
+        logging.error("🚫 Arresto script: chiave API non valida o permessi insufficienti.")
+    else:
+        logging.info("🚀 Trading bot avviato su Binance Testnet (ordini SIMULATI)...")
+        while True:
+            moving_average_strategy()
+            time.sleep(10)
+
