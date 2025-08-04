@@ -1,132 +1,63 @@
-import os
 import time
-import logging
-import smtplib
-from datetime import datetime
+import pandas as pd
+import numpy as np
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
-from email.mime.text import MIMEText
 
-# ==============================
-# CONFIGURAZIONE LOGGING
-# ==============================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+# Configurazione API Binance (Testnet)
+API_KEY = "Z41UsiUvJrUiSXZ2cWAXEkyzqscJq5ateXcc9nqkiIl37uIkHpDYmEOPpsjIgMS3"
+API_SECRET = "i4Yy3oAaevaZwkyD6w5EviL3zhXqo4lUZRMA0iBc1y3DImpsasAlXFoCzHqZ3G1n"
 
-# ==============================
-# CONFIGURAZIONE API BINANCE TESTNET
-# ==============================
-API_KEY = os.getenv("BINANCE_API_KEY", "D6Z9qe2RABCGqVpsmrcjnpnqHnjZ0JnQd5GqhUeASgiLfjmtXnG2wPpOimxNhUGi")
-API_SECRET = os.getenv("BINANCE_API_SECRET", "J0BNDBqWzwfbboYsUXxSEsCs2SERvXNKlQgmV7lOqPRI3vkTKczLzx4e1YGDRYfx")
 client = Client(API_KEY, API_SECRET, testnet=True)
 
-# ==============================
-# EMAIL CONFIG
-# ==============================
-EMAIL_SENDER = "railway.bot.report@gmail.com"
-EMAIL_PASSWORD = os.getenv("EMAIL_PASS", "password")  # Imposta password app Gmail
-EMAIL_RECEIVER = "a.bianco93@icloud.com"
+# Parametri strategia
+SYMBOL = "BTCUSDT"
+INTERVAL = Client.KLINE_INTERVAL_1HOUR
+LOOKBACK_SHORT = 10
+LOOKBACK_LONG = 50
+TRAILING_STOP_PCT = 0.10
+QUANTITY = 0.001  # quantità BTC da acquistare
 
-# ==============================
-# VARIABILI STATO
-# ==============================
-last_action = None  # "BUY", "SELL", "NONE"
-initial_balance = None
+position_open = False
+entry_price = 0.0
+max_price = 0.0
 
-# ==============================
-# FUNZIONE INVIO EMAIL
-# ==============================
-def send_email(subject, message):
+def get_data(symbol, interval, limit=100):
+    """Scarica i dati storici da Binance."""
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+    data = pd.DataFrame(klines, columns=[
+        'timestamp','open','high','low','close','volume','close_time',
+        'quote_asset_volume','number_of_trades','taker_buy_base','taker_buy_quote','ignore'
+    ])
+    data["close"] = data["close"].astype(float)
+    return data
+
+while True:
     try:
-        msg = MIMEText(message)
-        msg['Subject'] = subject
-        msg['From'] = EMAIL_SENDER
-        msg['To'] = EMAIL_RECEIVER
-        
-        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
-        server.quit()
-        logging.info("📧 Email inviata con successo")
-    except Exception as e:
-        logging.error(f"Errore invio email: {e}")
+        # Scarica dati più recenti
+        df = get_data(SYMBOL, INTERVAL)
 
-# ==============================
-# FUNZIONE SALDO TOTALE USDT
-# ==============================
-def get_total_balance():
-    try:
-        balances = client.get_account()['balances']
-        usdt = next((float(b['free']) for b in balances if b['asset'] == 'USDT'), 0)
-        btc = next((float(b['free']) for b in balances if b['asset'] == 'BTC'), 0)
-        btc_price = float(client.get_symbol_ticker(symbol="BTCUSDT")['price'])
-        total = usdt + (btc * btc_price)
-        return total
-    except Exception as e:
-        logging.error(f"Errore saldo: {e}")
-        return 0
+        # Calcola medie mobili
+        short_ma = df["close"].tail(LOOKBACK_SHORT).mean()
+        long_ma = df["close"].tail(LOOKBACK_LONG).mean()
+        price = df["close"].iloc[-1]
 
-# ==============================
-# FUNZIONE STRATEGIA
-# ==============================
-def moving_average_strategy(symbol="BTCUSDT", qty=0.001):
-    global last_action
-    try:
-        klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1MINUTE, limit=50)
-        closes = [float(x[4]) for x in klines]
+        global position_open, entry_price, max_price
 
-        fast_ma = sum(closes[-10:]) / 10
-        slow_ma = sum(closes) / 50
-        current_price = closes[-1]
+        # Entrata LONG
+        if not position_open and short_ma > long_ma:
+            order = client.order_market_buy(
+                symbol=SYMBOL,
+                quantity=QUANTITY
+            )
+            entry_price = price
+            max_price = price
+            position_open = True
+            print(f"💰 Entrata LONG a {price}")
 
-        logging.info(f"📊 Prezzo: {current_price} | Fast MA: {fast_ma} | Slow MA: {slow_ma}")
+        # Aggiorna trailing stop e valuta uscita
+        if position_open:
+            max_price = max(max_price, price)
+            stop_price = max_price * (1 - TRAILING_STOP_PCT)
 
-        # BUY condition
-        if fast_ma > slow_ma * 1.001 and last_action != "BUY":
-            try:
-                client.order_market_buy(symbol=symbol, quantity=qty)
-                last_action = "BUY"
-                logging.info("✅ Ordine BUY eseguito.")
-            except BinanceAPIException as e:
-                logging.error(f"Errore ordine BUY: {e.message}")
-
-        # SELL condition
-        elif fast_ma < slow_ma * 0.999 and last_action != "SELL":
-            try:
-                client.order_market_sell(symbol=symbol, quantity=qty)
-                last_action = "SELL"
-                logging.info("✅ Ordine SELL eseguito.")
-            except BinanceAPIException as e:
-                logging.error(f"Errore ordine SELL: {e.message}")
-    except Exception as e:
-        logging.error(f"⚠️ Errore strategia: {e}")
-
-# ==============================
-# MAIN LOOP
-# ==============================
-if __name__ == "__main__":
-    try:
-        client.get_account()
-        logging.info("✅ Connessione API Testnet riuscita - Account attivo.")
-    except BinanceAPIException as e:
-        logging.error(f"🚫 Arresto script: {e.message}")
-        exit()
-
-    initial_balance = get_total_balance()
-    logging.info(f"💰 Saldo iniziale: {initial_balance:.2f} USDT")
-
-    while True:
-        moving_average_strategy()
-        time.sleep(60)
-
-        # Report giornaliero alle 00:00 UTC
-        if datetime.utcnow().strftime('%H:%M') == '00:00':
-            current_balance = get_total_balance()
-            pnl = ((current_balance - initial_balance) / initial_balance) * 100 if initial_balance else 0
-            message = f"Saldo iniziale: {initial_balance:.2f} USDT\nSaldo attuale: {current_balance:.2f} USDT\nPnL: {pnl:.2f}%"
-            send_email("Report giornaliero Trading Bot", message)
-            initial_balance = current_balance
-
+            if price <= stop_price or short_ma < long_ma:
+                order = client.order_market_sell(
