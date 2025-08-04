@@ -1,1 +1,1 @@
-worker: python btc_ma_strategy.py
+worker: python btc_strategy.py
