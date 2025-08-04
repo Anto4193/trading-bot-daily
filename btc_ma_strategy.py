@@ -16,10 +16,11 @@ logging.basicConfig(
 # ==============================
 # CONFIGURAZIONE API BINANCE TESTNET
 # ==============================
-API_KEY = os.getenv("BINANCE_API_KEY", "Z41UsiUvJrUiSXZ2cWAXEkyzqscJq5ateXcc9nqkiIl37uIkHpDYmEOPpsjIgMS3")
-API_SECRET = os.getenv("BINANCE_API_SECRET", "i4Yy3oAaevaZwkyD6w5EviL3zhXqo4lUZRMA0iBc1y3DImpsasAlXFoCzHqZ3G1n")
+API_KEY = os.getenv("BINANCE_API_KEY", "D6Z9qe2RABCGqVpsmrcjnpnqHnjZ0JnQd5GqhUeASgiLfjmtXnG2wPpOimxNhUGi")
+API_SECRET = os.getenv("BINANCE_API_SECRET", "J0BNDBqWzwfbboYsUXxSEsCs2SERvXNKlQgmV7lOqPRI3vkTKczLzx4e1YGDRYfx")
 
-client = Client(API_KEY, API_SECRET, testnet=True)
+client = Client(API_KEY, API_SECRET)
+client.API_URL = 'https://testnet.binance.vision/api'
 
 # ==============================
 # FUNZIONE DI TEST CONNESSIONE
@@ -31,6 +32,9 @@ def test_connection():
         return True
     except BinanceAPIException as e:
         logging.error(f"❌ Errore connessione API: {e.message}")
+        return False
+    except Exception as e:
+        logging.error(f"❌ Errore sconosciuto nella connessione API: {e}")
         return False
 
 # ==============================
@@ -59,6 +63,8 @@ def moving_average_strategy(symbol="BTCUSDT", qty=0.001):
                 logging.info("✅ Ordine SELL eseguito.")
             except BinanceAPIException as e:
                 logging.error(f"Errore ordine SELL: {e.message}")
+        else:
+            logging.info("🤝 Nessun segnale di trading, in attesa...")
     except Exception as e:
         logging.error(f"⚠️ Errore strategia: {e}")
 
