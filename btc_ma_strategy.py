@@ -1,80 +1,93 @@
-import time
-from binance.client import Client
-from binance.enums import *
-import pandas as pd
-import numpy as np
 import os
+import time
+import logging
+import pandas as pd
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
 
-# ==============================
-# CONFIGURAZIONE
-# ==============================
+# === CONFIGURAZIONE ===
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 
 client = Client(API_KEY, API_SECRET, testnet=True)
 
 SYMBOL = "BTCUSDT"
-QUANTITY = 0.001  # quantità BTC da acquistare
 INTERVAL = Client.KLINE_INTERVAL_1HOUR
-LOOKBACK = "100 hours"
+LOOKBACK_SHORT = 10
+LOOKBACK_LONG = 50
+TRAILING_STOP_PCT = 0.10
+QUANTITY = 0.001  # BTC da acquistare
 
-SHORT_MA = 20
-LONG_MA = 50
-TRAILING_STOP = 0.03  # 3% di trailing stop
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
-position_open = False
-buy_price = 0
-max_price = 0
 
-# ==============================
-# FUNZIONI
-# ==============================
-def get_data(symbol, interval, lookback):
-    """Scarica i dati storici da Binance"""
-    frame = pd.DataFrame(client.get_historical_klines(symbol, interval, lookback))
-    frame = frame.iloc[:, 0:6]
-    frame.columns = ['Time', 'Open', 'High', 'Low', 'Close', 'Volume']
-    frame = frame.set_index('Time')
-    frame.index = pd.to_datetime(frame.index, unit='ms')
-    frame = frame.astype(float)
-    return frame
+def get_data(symbol, interval, limit=100):
+    """Scarica i dati storici da Binance."""
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+    data = pd.DataFrame(
+        klines,
+        columns=[
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "close_time",
+            "quote_asset_volume",
+            "number_of_trades",
+            "taker_buy_base",
+            "taker_buy_quote",
+            "ignore",
+        ],
+    )
+    data["close"] = data["close"].astype(float)
+    return data
 
-# ==============================
-# LOOP PRINCIPALE
-# ==============================
-while True:
-    try:
-        df = get_data(SYMBOL, INTERVAL, LOOKBACK)
-        short_ma = df['Close'].rolling(SHORT_MA).mean().iloc[-1]
-        long_ma = df['Close'].rolling(LONG_MA).mean().iloc[-1]
-        price = df['Close'].iloc[-1]
 
-        # ===== ENTRATA =====
-        if not position_open and short_ma > long_ma:
-            order = client.order_market_buy(
-                symbol=SYMBOL,
-                quantity=QUANTITY
-            )
-            position_open = True
-            buy_price = price
-            max_price = price
-            print(f"✅ Acquisto a {price}")
+def trading_loop():
+    position_open = False
+    entry_price = 0.0
+    max_price = 0.0
 
-        # ===== USCITA =====
-        elif position_open:
-            max_price = max(max_price, price)
-            stop_price = max_price * (1 - TRAILING_STOP)
+    while True:
+        try:
+            df = get_data(SYMBOL, INTERVAL)
+            short_ma = df["close"].tail(LOOKBACK_SHORT).mean()
+            long_ma = df["close"].tail(LOOKBACK_LONG).mean()
+            price = df["close"].iloc[-1]
 
-            if price <= stop_price or short_ma < long_ma:
-                order = client.order_market_sell(
-                    symbol=SYMBOL,
-                    quantity=QUANTITY
-                )
-                position_open = False
-                print(f"🚨 Vendita a {price} (Trailing Stop attivato)")
+            # === ENTRATA LONG ===
+            if not position_open and short_ma > long_ma:
+                client.order_market_buy(symbol=SYMBOL, quantity=QUANTITY)
+                entry_price = price
+                max_price = price
+                position_open = True
+                logger.info("Entrata LONG a %.2f", price)
 
-        time.sleep(60)  # 1 minuto tra i cicli
+            # === GESTIONE POSIZIONE ===
+            elif position_open:
+                max_price = max(max_price, price)
+                stop_price = max_price * (1 - TRAILING_STOP_PCT)
 
-    except Exception as e:
-        print(f"Errore: {e}")
-        time.sleep(60)
+                if price <= stop_price or short_ma < long_ma:
+                    client.order_market_sell(symbol=SYMBOL, quantity=QUANTITY)
+                    position_open = False
+                    logger.info("Uscita LONG a %.2f", price)
+
+            time.sleep(60)  # evita di saturare l'API
+
+        except BinanceAPIException as e:
+            logger.error("Errore API Binance: %s", e)
+            time.sleep(60)
+        except Exception as e:
+            logger.exception("Errore inatteso: %s", e)
+            time.sleep(60)
+
+
+if __name__ == "__main__":
+    trading_loop()
